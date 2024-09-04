@@ -1,4 +1,6 @@
 import { fromPairs, pick, toPairs } from 'lodash';
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 import { CustomSlugToSlug, CustomSlugs } from '../../config/constants';
 import { Export, ExportOptions } from './export-v2';
 import { SchemaUID } from '../../types';
@@ -15,14 +17,15 @@ function convertToJson(jsoContent: Export) {
 }
 
 function withBeforeConvert(convertFn: Converter) {
-  return (jsoContent: Export, options: ExportOptions) => {
-    return convertFn(beforeConvert(jsoContent, options), options);
+  return async (jsoContent: Export, options: ExportOptions) => {
+    const data = await beforeConvert(jsoContent, options);
+    return convertFn(data, options);
   };
 }
 
-function beforeConvert(jsoContent: Export, options: ExportOptions) {
+async function beforeConvert(jsoContent: Export, options: ExportOptions) {
   jsoContent = buildMediaUrl(jsoContent, options);
-  jsoContent = pickMediaAttributes(jsoContent, options);
+  jsoContent = await pickMediaAttributes(jsoContent, options);
 
   return jsoContent;
 }
@@ -57,7 +60,7 @@ function buildAbsoluteUrl(relativeUrl: string) {
   return getConfig('serverPublicHostname') + relativeUrl;
 }
 
-function pickMediaAttributes(jsoContent: Export, options: ExportOptions) {
+async function pickMediaAttributes(jsoContent: Export, options: ExportOptions) {
   let mediaSlug: SchemaUID = CustomSlugToSlug[CustomSlugs.MEDIA];
   let media = jsoContent.data[mediaSlug];
 
@@ -65,14 +68,37 @@ function pickMediaAttributes(jsoContent: Export, options: ExportOptions) {
     return jsoContent;
   }
 
-  media = fromPairs(
-    toPairs(media).map(([id, medium]: [string, any]) => {
-      medium = pick(medium, ['id', 'name', 'alternativeText', 'caption', 'hash', 'ext', 'mime', 'url', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']);
-      return [id, medium];
-    }),
-  );
+  await processMedia(media);
 
   jsoContent.data[mediaSlug] = media;
 
   return jsoContent;
+}
+
+async function processMedia(media: Record<string, any>): Promise<Record<string, any>> {
+  const pairsData: [string, any][] = await Promise.all(
+    toPairs(media).map(async ([id, medium]: [string, any]): Promise<[string, any]> => {
+      medium = pick(medium, ['id', 'name', 'alternativeText', 'caption', 'hash', 'ext', 'mime', 'url', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']) as any;
+
+      const s3Client = new S3Client({
+        region: getConfig('region'),
+        credentials: {
+          accessKeyId: getConfig('accessKeyId'),
+          secretAccessKey: getConfig('secretAccessKey'),
+        },
+      });
+      const command = new GetObjectCommand({
+        Bucket: getConfig('bucket'),
+        Key: medium.name,
+      });
+
+      const updatedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 }); //
+
+      medium.url = updatedUrl;
+
+      return [id, medium];
+    }),
+  );
+
+  return fromPairs(pairsData);
 }

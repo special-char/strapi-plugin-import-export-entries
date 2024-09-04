@@ -1,7 +1,7 @@
 const pluginId = require('./pluginId');
 
 /**
- * @typedef {("serverPublicHostname")} ConfigParam
+ * @typedef {("serverPublicHostname"| "region" | "accessKeyId" | "secretAccessKey" | "bucket")} ConfigParam
  */
 
 /**
